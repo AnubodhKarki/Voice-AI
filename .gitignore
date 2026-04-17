@@ -1,0 +1,33 @@
+.env
+Deepgram/.env
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+venv/
+.venv/
+env/
+ENV/
+
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+transcript_*.txt
+
+# ── Local audio / media files ────────────────────────────────
+*.mp3
+*.wav
+*.m4a
+*.ogg
+
+# ── Scratch / personal files ──────────────────────────────────
+audio_url.txt
+packages.txt
+*.zip
+
+# ── OS ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

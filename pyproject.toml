@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "voice-ai-explorer"
+version = "0.1.0"
+description = "Multi-provider Voice AI Explorer — AssemblyAI + Deepgram transcription, streaming, and audio analysis."
+authors = ["Anubodh Karki"]
+readme = "README.md"
+packages = [{ include = "voice_ai_explorer", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.14"
+assemblyai = ">=0.40.0"
+av = ">=10.0.0"
+deepgram-sdk = ">=3.5.0"
+numpy = ">=1.24.0"
+plotly = ">=5.18.0"
+pyaudio = { version = ">=0.2.14", optional = true }
+python-dotenv = ">=1.0.0"
+requests = ">=2.32.0"
+soundfile = ">=0.12.0"
+streamlit = ">=1.35.0"
+streamlit-webrtc = { version = ">=0.47.0", optional = true }
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0.0"
+
+[tool.poetry.extras]
+live = ["pyaudio"]
+webrtc = ["streamlit-webrtc"]
+
+[tool.poetry.scripts]
+explorer = "voice_ai_explorer.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"

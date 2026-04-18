@@ -1,0 +1,10 @@
+[server]
+# Required on Hugging Face Spaces: the HF proxy modifies request headers in a
+# way that breaks Streamlit's XSRF token validation, causing 403 on file uploads.
+enableXsrfProtection = false
+# HF Spaces handles CORS at the proxy level; disabling here avoids double-handling.
+enableCORS = false
+maxUploadSize = 200
+
+[browser]
+gatherUsageStats = false

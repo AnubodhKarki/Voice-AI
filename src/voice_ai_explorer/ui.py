@@ -760,6 +760,12 @@ def render_streaming_tab():
                 audio_processor_factory=_AudioForwarder,
                 media_stream_constraints={"audio": True, "video": False},
                 async_processing=True,
+                rtc_configuration={
+                    "iceServers": [
+                        {"urls": ["stun:stun.l.google.com:19302"]},
+                        {"urls": ["stun:stun1.l.google.com:19302"]},
+                    ]
+                },
             )
 
     # ------------------------------------------------------------------ #

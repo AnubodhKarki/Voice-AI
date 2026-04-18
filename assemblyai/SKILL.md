@@ -38,9 +38,9 @@ Authorization: <YOUR_API_KEY>          # header key is lowercase "authorization"
 | Model value | Name | Languages | Keyterms | Latency |
 |---|---|---|---|---|
 | `u3-rt-pro` | Universal-3 Pro Streaming | 6 | 100 | ~300ms P50 |
-| `universal-streaming-multilingual` | Universal Streaming ML | 6 | 100 | — |
+| `universal-streaming-multilingual` | Universal Streaming ML | 6 | 100 | N/A |
 | `universal-streaming-english` | Universal Streaming EN | English only | 100 | Fastest |
-| `whisper-rt` | Whisper Streaming | 99+ | None | — |
+| `whisper-rt` | Whisper Streaming | 99+ | None | N/A |
 
 ---
 

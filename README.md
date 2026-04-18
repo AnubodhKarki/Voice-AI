@@ -10,7 +10,7 @@ pinned: false
 # Voice AI Explorer
 
 A multi-provider Voice AI orchestration playground built with Streamlit.  
-Supports **AssemblyAI** and **Deepgram** side-by-side — transcription, live streaming, audio quality analysis, and provider comparison.
+Supports **AssemblyAI** and **Deepgram** side-by-side: transcription, live streaming, audio quality analysis, and provider comparison.
 
 ## Features
 
@@ -26,10 +26,10 @@ Supports **AssemblyAI** and **Deepgram** side-by-side — transcription, live st
 
 ## Tabs
 
-- **Pre-recorded** — Upload audio or provide a URL; choose AssemblyAI, Deepgram, or both
-- **Live Streaming** — Real-time transcription via browser mic (WebRTC) or local microphone
-- **Compare** — Transcribe the same audio with both providers; compare transcript, confidence, latency, and word count
-- **Debug / API Inspector** — Health checks, raw JSON, curl command generator, transcript management
+- **Pre-recorded**: Upload audio or provide a URL; choose AssemblyAI, Deepgram, or both
+- **Live Streaming**: Real-time transcription via browser mic (WebRTC) or local microphone
+- **Compare**: Transcribe the same audio with both providers; compare transcript, confidence, latency, and word count
+- **Debug / API Inspector**: Health checks, raw JSON, curl command generator, transcript management
 
 ## Quick Start
 

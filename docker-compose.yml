@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    environment:
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_ENABLE_CORS=false
+    volumes:
+      - ./src:/app/src:ro
+    restart: unless-stopped

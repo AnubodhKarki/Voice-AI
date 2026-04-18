@@ -26,6 +26,7 @@ transcript_*.txt
 audio_url.txt
 packages.txt
 *.zip
+settings.local.json
 
 # ── OS ────────────────────────────────────────────────────────
 .DS_Store

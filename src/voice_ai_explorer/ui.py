@@ -1207,12 +1207,54 @@ def render_debug_tab():
                 )
 
 
+def _word_diff_html(text_a: str, text_b: str) -> tuple[str, str]:
+    """Return (html_a, html_b) with differing words colour-highlighted.
+
+    Common words render as plain text. Words only in text_a get a red background;
+    words only in text_b get a blue background.
+    """
+    import difflib
+
+    words_a = text_a.split()
+    words_b = text_b.split()
+    matcher = difflib.SequenceMatcher(None, words_a, words_b, autojunk=False)
+
+    html_a: list[str] = []
+    html_b: list[str] = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for w in words_a[i1:i2]:
+                html_a.append(w)
+                html_b.append(w)
+        elif tag == "replace":
+            for w in words_a[i1:i2]:
+                html_a.append(f'<mark style="background:#ffcccc;padding:1px 2px">{w}</mark>')
+            for w in words_b[j1:j2]:
+                html_b.append(f'<mark style="background:#cce5ff;padding:1px 2px">{w}</mark>')
+        elif tag == "delete":
+            for w in words_a[i1:i2]:
+                html_a.append(f'<mark style="background:#ffcccc;padding:1px 2px">{w}</mark>')
+        elif tag == "insert":
+            for w in words_b[j1:j2]:
+                html_b.append(f'<mark style="background:#cce5ff;padding:1px 2px">{w}</mark>')
+
+    return " ".join(html_a), " ".join(html_b)
+
+
 def render_compare_tab():
+    import concurrent.futures
+    import difflib
+    import threading
+
     aai_key = get_assemblyai_key(st.session_state.aai_api_key)
     dg_key = get_deepgram_key(st.session_state.dg_api_key)
 
     st.subheader("Side-by-Side Provider Comparison")
-    st.caption("Transcribe the same audio with both AssemblyAI and Deepgram and compare results.")
+    st.caption(
+        "Both providers receive identical audio and settings. "
+        "API calls are dispatched simultaneously via a thread barrier, neither gets a head start."
+    )
 
     if not aai_key:
         st.warning("AssemblyAI API key not set. Add it in the sidebar.")
@@ -1238,6 +1280,13 @@ def render_compare_tab():
         uploaded_file = st.file_uploader(
             "Upload audio", type=["mp3", "wav", "m4a", "ogg", "mp4"], key="compare_upload"
         )
+
+    # Shared settings applied identically to both providers
+    with st.expander("Shared transcription settings", expanded=True):
+        sc1, sc2, sc3 = st.columns(3)
+        cmp_punctuate = sc1.checkbox("Punctuation", value=True, key="cmp_punctuate")
+        cmp_smart_format = sc2.checkbox("Smart format", value=True, key="cmp_smart_format")
+        cmp_diarize = sc3.checkbox("Speaker diarization", value=False, key="cmp_diarize")
 
     col_aai_model, col_dg_model = st.columns(2)
     with col_aai_model:
@@ -1272,36 +1321,48 @@ def render_compare_tab():
     else:
         resolved_url = DEFAULT_AUDIO_URL
 
-    import concurrent.futures
+    # Barrier synchronises the moment both threads call their provider's API,
+    # ensuring wall-clock latency is measured from the same instant.
+    barrier = threading.Barrier(2)
 
     def run_aai():
+        # Pre-barrier: AAI requires uploading file bytes to get a hosted URL first.
         if audio_bytes:
             url = upload_file(audio_bytes, aai_key)
         else:
             url = resolved_url
         payload = build_transcript_payload(
             audio_url=url, model=aai_model, language_code=None,
-            punctuate=True, format_text=True, speaker_labels=False,
-            speakers_expected=0, sentiment_analysis=False, entity_detection=False,
-            auto_highlights=False, iab_categories=False, filter_profanity=False,
-            disfluencies=False, keyterms_input="", prompt_input="",
+            punctuate=cmp_punctuate, format_text=cmp_smart_format,
+            speaker_labels=cmp_diarize, speakers_expected=0,
+            sentiment_analysis=False, entity_detection=False,
+            auto_highlights=False, iab_categories=False,
+            filter_profanity=False, disfluencies=False,
+            keyterms_input="", prompt_input="",
         )
+        barrier.wait()
+        t0 = time.time()
         submit_json, submit_status, _ = submit_transcript_debug(payload, aai_key)
         if submit_status >= 400:
             return None, submit_status, 0, "Submission failed"
         tid = submit_json["id"]
-        result, _, poll_ms = poll_transcript_debug(tid, aai_key)
-        return result, 200, poll_ms, None
+        result, _, _ = poll_transcript_debug(tid, aai_key)
+        return result, 200, round((time.time() - t0) * 1000), None
 
     def run_dg():
-        dg_opts = dg_build_options(model=dg_model, smart_format=True, punctuate=True)
+        dg_opts = dg_build_options(
+            model=dg_model,
+            smart_format=cmp_smart_format,
+            punctuate=cmp_punctuate,
+            diarize=cmp_diarize,
+        )
+        barrier.wait()
         t0 = time.time()
         if audio_bytes:
-            dg_result, dg_status, dg_ms = dg_transcribe_file(audio_bytes, audio_content_type, dg_opts, dg_key)
+            dg_result, dg_status, _ = dg_transcribe_file(audio_bytes, audio_content_type, dg_opts, dg_key)
         else:
-            dg_result, dg_status, dg_ms = dg_transcribe_url(resolved_url, dg_opts, dg_key)
-        elapsed_ms = round((time.time() - t0) * 1000)
-        return dg_result, dg_status, elapsed_ms, None
+            dg_result, dg_status, _ = dg_transcribe_url(resolved_url, dg_opts, dg_key)
+        return dg_result, dg_status, round((time.time() - t0) * 1000), None
 
     with st.spinner("Transcribing with both providers simultaneously..."):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -1310,51 +1371,133 @@ def render_compare_tab():
             aai_result, aai_status, aai_ms, aai_error = aai_future.result()
             dg_result, dg_status, dg_ms, dg_error = dg_future.result()
 
+    if aai_error or aai_result is None:
+        st.error(f"AssemblyAI failed: {aai_error}")
+        return
+    if dg_error or dg_status >= 400:
+        st.error(f"Deepgram failed (HTTP {dg_status}): {dg_error}")
+        return
+
+    # ── Extract and compute metrics ───────────────────────────────────────────
+    aai_text = aai_result.get("text") or ""
+    dg_text = dg_extract_transcript(dg_result)
+
+    aai_word_list = aai_text.split()
+    dg_word_list = dg_text.split()
+
+    def _vocab(t: str) -> set[str]:
+        return {w.lower().strip(".,!?\"'") for w in t.split() if w.strip(".,!?\"'")}
+
+    def _sentences(t: str) -> int:
+        return len([s for s in t.split(".") if s.strip()])
+
+    aai_vocab = _vocab(aai_text)
+    dg_vocab = _vocab(dg_text)
+    aai_conf = aai_result.get("confidence")
+    dg_conf = extract_confidence(dg_result)
+
+    similarity = difflib.SequenceMatcher(
+        None,
+        [w.lower() for w in aai_word_list],
+        [w.lower() for w in dg_word_list],
+        autojunk=False,
+    ).ratio()
+
+    only_aai = sorted(aai_vocab - dg_vocab)
+    only_dg = sorted(dg_vocab - aai_vocab)
+
+    # ── Similarity headline ───────────────────────────────────────────────────
+    st.markdown(f"### Results  ·  Word-level similarity: **{similarity * 100:.1f}%**")
+    st.caption(
+        "Latency = wall-clock time from the barrier (both threads start the API call at the same instant)."
+    )
+
+    # ── Metrics table (manual columns, no pandas dependency) ─────────────────
+    def _conf(c: float | None) -> str:
+        return f"{round(c * 100, 1)}%" if c is not None else "N/A"
+
+    faster = "AssemblyAI" if aai_ms < dg_ms else "Deepgram"
+    rows = [
+        ("Latency (ms)", f"{aai_ms:,}", f"{dg_ms:,}", f"{abs(aai_ms - dg_ms):,} ms — {faster} faster"),
+        ("Word count", len(aai_word_list), len(dg_word_list), f"Δ {abs(len(aai_word_list) - len(dg_word_list))}"),
+        ("Characters (no spaces)", len(aai_text.replace(" ", "")), len(dg_text.replace(" ", "")),
+         f"Δ {abs(len(aai_text.replace(' ', '')) - len(dg_text.replace(' ', '')))}"),
+        ("Confidence", _conf(aai_conf), _conf(dg_conf), ""),
+        ("Sentences", _sentences(aai_text), _sentences(dg_text),
+         f"Δ {abs(_sentences(aai_text) - _sentences(dg_text))}"),
+        ("Unique vocabulary", len(aai_vocab), len(dg_vocab), f"Δ {abs(len(aai_vocab) - len(dg_vocab))}"),
+        ("Exclusive words", len(only_aai), len(only_dg), "words not shared between transcripts"),
+    ]
+
+    hcols = st.columns([2, 1.5, 1.5, 2.5])
+    for col, hdr in zip(hcols, ["Metric", "AssemblyAI", "Deepgram", "Delta"]):
+        col.markdown(f"**{hdr}**")
+    st.markdown("<hr style='margin:4px 0'>", unsafe_allow_html=True)
+    for metric, aai_val, dg_val, delta in rows:
+        rc = st.columns([2, 1.5, 1.5, 2.5])
+        rc[0].write(metric)
+        rc[1].write(str(aai_val))
+        rc[2].write(str(dg_val))
+        rc[3].write(delta or "—")
+
+    st.divider()
+
+    # ── Diff-highlighted transcript view ──────────────────────────────────────
+    st.markdown("#### Transcript comparison")
+    st.caption(":red[Red highlight] = only in AssemblyAI  ·  :blue[Blue highlight] = only in Deepgram")
+
+    aai_html, dg_html = _word_diff_html(aai_text, dg_text)
+    _panel = (
+        "border:1px solid #e0e0e0;border-radius:6px;padding:12px;"
+        "height:280px;overflow-y:auto;font-size:0.88rem;line-height:1.75"
+    )
     col_aai, col_dg = st.columns(2)
-
     with col_aai:
-        st.markdown("### AssemblyAI")
-        if aai_error or aai_result is None:
-            st.error(f"Failed: {aai_error}")
-        else:
-            aai_text = aai_result.get("text") or ""
-            aai_words = len(aai_text.split()) if aai_text.strip() else 0
-            aai_conf = aai_result.get("confidence")
-            st.metric("Words", aai_words)
-            st.metric("Time (ms)", aai_ms)
-            if aai_conf is not None:
-                st.metric("Confidence", f"{round(aai_conf * 100, 1)}%")
-            st.text_area("Transcript", value=aai_text, height=300, disabled=True, key="cmp_aai_out")
-            with st.expander("Raw JSON"):
-                st.json(aai_result)
-
+        st.markdown("**AssemblyAI**")
+        st.markdown(f'<div style="{_panel}">{aai_html}</div>', unsafe_allow_html=True)
+        with st.expander("Raw JSON"):
+            st.json(aai_result)
     with col_dg:
-        st.markdown("### Deepgram")
-        if dg_error or dg_status >= 400:
-            st.error(f"Failed (HTTP {dg_status}): {dg_error}")
+        st.markdown("**Deepgram**")
+        st.markdown(f'<div style="{_panel}">{dg_html}</div>', unsafe_allow_html=True)
+        with st.expander("Raw JSON"):
             st.json(dg_result)
-        else:
-            dg_text = dg_extract_transcript(dg_result)
-            dg_words = len(dg_text.split()) if dg_text.strip() else 0
-            dg_conf = extract_confidence(dg_result)
-            st.metric("Words", dg_words)
-            st.metric("Time (ms)", dg_ms)
-            if dg_conf is not None:
-                st.metric("Confidence", f"{round(dg_conf * 100, 1)}%")
-            st.text_area("Transcript", value=dg_text, height=300, disabled=True, key="cmp_dg_out")
-            with st.expander("Raw JSON"):
-                st.json(dg_result)
 
-    if aai_result and dg_status < 400:
-        st.divider()
-        st.markdown("#### Latency Comparison")
-        import plotly.graph_objects as go
+    # ── Vocabulary differences ────────────────────────────────────────────────
+    if only_aai or only_dg:
+        st.markdown("#### Vocabulary differences")
+        vc1, vc2 = st.columns(2)
+        with vc1:
+            st.markdown(f"**Only in AssemblyAI** — {len(only_aai)} word(s)")
+            st.write(", ".join(only_aai[:60]) if only_aai else "_none_")
+        with vc2:
+            st.markdown(f"**Only in Deepgram** — {len(only_dg)} word(s)")
+            st.write(", ".join(only_dg[:60]) if only_dg else "_none_")
+
+    # ── Charts ────────────────────────────────────────────────────────────────
+    st.markdown("#### Visual comparison")
+    import plotly.graph_objects as go
+
+    providers = ["AssemblyAI", "Deepgram"]
+    colors = ["#1f77b4", "#ff7f0e"]
+    chart_layout = dict(height=260, margin=dict(l=10, r=10, t=36, b=20))
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        fig = go.Figure([go.Bar(x=providers, y=[aai_ms, dg_ms], marker_color=colors)])
+        fig.update_layout(title="Latency (ms)", **chart_layout)
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        fig = go.Figure([go.Bar(x=providers, y=[len(aai_word_list), len(dg_word_list)], marker_color=colors)])
+        fig.update_layout(title="Word count", **chart_layout)
+        st.plotly_chart(fig, use_container_width=True)
+    with c3:
         fig = go.Figure([go.Bar(
-            x=["AssemblyAI", "Deepgram"],
-            y=[aai_ms, dg_ms],
-            marker_color=["#1f77b4", "#ff7f0e"],
+            x=providers,
+            y=[round(aai_conf * 100, 1) if aai_conf else 0, round(dg_conf * 100, 1) if dg_conf else 0],
+            marker_color=colors,
         )])
-        fig.update_layout(yaxis_title="ms", height=300, margin=dict(l=20, r=20, t=20, b=20))
+        fig.update_layout(title="Confidence (%)", yaxis_range=[0, 100], **chart_layout)
         st.plotly_chart(fig, use_container_width=True)
 
 

@@ -105,11 +105,12 @@ def submit_transcript_debug(payload: dict, api_key: str = ""):
     return resp.json(), resp.status_code, elapsed
 
 
-def poll_transcript_debug(transcript_id: str, api_key: str = ""):
+def poll_transcript_debug(transcript_id: str, api_key: str = "", interval: float = 3.0):
     data = {}
     status_code = 0
     elapsed = 0
-    for _ in range(60):
+    max_iterations = max(60, round(300 / interval))
+    for _ in range(max_iterations):
         t0 = time.perf_counter()
         resp = requests.get(
             f"{BASE_URL}/v2/transcript/{transcript_id}", headers=auth_headers(api_key)
@@ -119,7 +120,7 @@ def poll_transcript_debug(transcript_id: str, api_key: str = ""):
         data = resp.json()
         if data.get("status") in ("completed", "error"):
             return data, status_code, elapsed
-        time.sleep(3)
+        time.sleep(interval)
     return {"status": "error", "error": "Timed out."}, status_code, elapsed
 
 

@@ -19,6 +19,7 @@ def init_session_state(session_state):
         ("_stream_events", None),
         ("_stream_stop_event", None),
         ("_stream_audio_queue", None),
+        ("_queue_holder", {"q": None}),
         ("stream_mode", None),
         ("stream_event_log", []),
         ("stream_start_time", None),

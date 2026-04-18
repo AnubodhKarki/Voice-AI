@@ -727,12 +727,54 @@ def render_streaming_tab():
             )
             return
 
+        # _queue_holder is a persistent mutable dict stored in session state.
+        # The AudioForwarder.recv() callback runs in streamlit-webrtc's thread
+        # (not the Streamlit script thread), so it can't access st.session_state
+        # directly. Mutating queue_holder["q"] in the main thread is visible to
+        # the callback thread because both hold a reference to the same dict object.
+        queue_holder = st.session_state._queue_holder
+
+        class _AudioForwarder(AudioProcessorBase):
+            def recv(self, frame):
+                q = queue_holder["q"]
+                if q is not None:
+                    try:
+                        q.push(convert_audio_frame(frame))
+                    except Exception:
+                        pass
+                return frame
+
+        # Always render webrtc_streamer so the peer connection is established while
+        # the page is stable (no 0.5s polling loop). The Start button below is
+        # disabled until the mic is actually streaming.
+        webrtc_ctx = webrtc_streamer(
+            key="browser_mic",
+            mode=WebRtcMode.SENDONLY,
+            audio_processor_factory=_AudioForwarder,
+            media_stream_constraints={"audio": True, "video": False},
+            async_processing=True,
+            rtc_configuration={
+                "iceServers": [
+                    {"urls": ["stun:stun.l.google.com:19302"]},
+                    {"urls": ["stun:stun1.l.google.com:19302"]},
+                ]
+            },
+        )
+
+        try:
+            mic_active = webrtc_ctx is not None and webrtc_ctx.state.playing
+        except Exception:
+            mic_active = False
+
+        if not mic_active:
+            st.caption("Click **START** above to allow microphone access, then press **Start Transcription**.")
+
         col_start, col_stop = st.columns(2)
         with col_start:
             if st.button(
-                "Start",
+                "Start Transcription",
                 type="primary",
-                disabled=st.session_state.streaming,
+                disabled=st.session_state.streaming or not mic_active,
                 key="start_browser",
             ):
                 st.session_state.streaming = True
@@ -742,49 +784,19 @@ def render_streaming_tab():
                 st.session_state.stream_audio_duration = None
                 st.session_state.stream_error = None
                 if stream_provider == "AssemblyAI":
-                    start_streaming_thread_browser(st.session_state, stream_model, active_key)
+                    aq = start_streaming_thread_browser(st.session_state, stream_model, active_key)
                 else:
-                    start_deepgram_streaming_thread(st.session_state, stream_model, active_key)
+                    aq = start_deepgram_streaming_thread(st.session_state, stream_model, active_key)
+                queue_holder["q"] = aq
                 st.rerun()
 
         with col_stop:
             if st.button(
                 "Stop", disabled=not st.session_state.streaming, key="stop_browser"
             ):
+                queue_holder["q"] = None
                 stop_streaming(st.session_state)
                 st.rerun()
-
-        # Render the WebRTC streamer only while a session is active.
-        if st.session_state.streaming:
-            audio_queue: WebRTCAudioQueue | None = getattr(
-                st.session_state, "_stream_audio_queue", None
-            )
-
-            # Capture audio_queue in the closure.
-            _queue_ref = audio_queue
-
-            class _AudioForwarder(AudioProcessorBase):
-                def recv(self, frame):
-                    if _queue_ref is not None:
-                        try:
-                            _queue_ref.push(convert_audio_frame(frame))
-                        except Exception:
-                            pass
-                    return frame
-
-            webrtc_streamer(
-                key="browser_mic",
-                mode=WebRtcMode.SENDONLY,
-                audio_processor_factory=_AudioForwarder,
-                media_stream_constraints={"audio": True, "video": False},
-                async_processing=True,
-                rtc_configuration={
-                    "iceServers": [
-                        {"urls": ["stun:stun.l.google.com:19302"]},
-                        {"urls": ["stun:stun1.l.google.com:19302"]},
-                    ]
-                },
-            )
 
     # ------------------------------------------------------------------ #
     # Common status / output section (shared by both modes)               #

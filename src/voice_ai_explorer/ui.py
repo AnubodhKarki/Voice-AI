@@ -1325,57 +1325,94 @@ def render_compare_tab():
     # ensuring wall-clock latency is measured from the same instant.
     barrier = threading.Barrier(2)
 
+    # Both functions use the same call pattern via each provider's official SDK:
+    # create client → configure options → transcribe(audio) → block until result.
+    # The thread barrier ensures both SDK calls start at the exact same instant.
+
     def run_aai():
-        # Pre-barrier: AAI requires uploading file bytes to get a hosted URL first.
-        if audio_bytes:
-            url = upload_file(audio_bytes, aai_key)
-        else:
-            url = resolved_url
-        payload = build_transcript_payload(
-            audio_url=url, model=aai_model, language_code=None,
-            punctuate=cmp_punctuate, format_text=cmp_smart_format,
-            speaker_labels=cmp_diarize, speakers_expected=0,
-            sentiment_analysis=False, entity_detection=False,
-            auto_highlights=False, iab_categories=False,
-            filter_profanity=False, disfluencies=False,
-            keyterms_input="", prompt_input="",
+        import assemblyai as aai_sdk
+        import os
+        import tempfile
+
+        aai_sdk.settings.api_key = aai_key
+        config = aai_sdk.TranscriptionConfig(
+            punctuate=cmp_punctuate,
+            format_text=cmp_smart_format,
+            speaker_labels=cmp_diarize,
+            speech_model=aai_sdk.SpeechModel(aai_model) if aai_model else aai_sdk.SpeechModel.best,
         )
+        transcriber = aai_sdk.Transcriber(config=config)
+
         barrier.wait()
-        # Track submit and processing separately so the user can see the breakdown.
         t0 = time.time()
-        submit_json, submit_status, submit_ms = submit_transcript_debug(payload, aai_key)
-        if submit_status >= 400:
-            return None, submit_status, 0, "Submission failed", {}
-        tid = submit_json["id"]
-        # Poll at 1s intervals (default is 3s) so the measured time is close to
-        # actual processing time rather than inflated by polling granularity.
-        t_poll = time.time()
-        result, _, _ = poll_transcript_debug(tid, aai_key, interval=1.0)
-        processing_ms = round((time.time() - t_poll) * 1000)
+
+        if audio_bytes:
+            suffix = "." + (audio_content_type.split("/")[-1] or "wav")
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                f.write(audio_bytes)
+                tmp_path = f.name
+            try:
+                transcript = transcriber.transcribe(tmp_path)
+            finally:
+                os.unlink(tmp_path)
+        else:
+            transcript = transcriber.transcribe(resolved_url)
+
         total_ms = round((time.time() - t0) * 1000)
-        return result, 200, total_ms, None, {"submit_ms": submit_ms, "processing_ms": processing_ms}
+
+        if transcript.status == aai_sdk.TranscriptStatus.error:
+            return None, 400, 0, transcript.error or "Transcription error", {}
+
+        result = {
+            "text": transcript.text,
+            "confidence": transcript.confidence,
+            "audio_duration": transcript.audio_duration,
+            "id": transcript.id,
+        }
+        return result, 200, total_ms, None, {"audio_duration": transcript.audio_duration}
 
     def run_dg():
-        dg_opts = dg_build_options(
-            model=dg_model,
-            smart_format=cmp_smart_format,
-            punctuate=cmp_punctuate,
-            diarize=cmp_diarize,
-        )
+        from deepgram import DeepgramClient
+
+        client = DeepgramClient(api_key=dg_key)
+
         barrier.wait()
         t0 = time.time()
+
         if audio_bytes:
-            dg_result, dg_status, _ = dg_transcribe_file(audio_bytes, audio_content_type, dg_opts, dg_key)
+            response = client.listen.v1.media.transcribe_file(
+                request=audio_bytes,
+                model=dg_model or "nova-3",
+                smart_format=cmp_smart_format,
+                punctuate=cmp_punctuate,
+                diarize=cmp_diarize or None,
+            )
         else:
-            dg_result, dg_status, _ = dg_transcribe_url(resolved_url, dg_opts, dg_key)
-        return dg_result, dg_status, round((time.time() - t0) * 1000), None, {}
+            response = client.listen.v1.media.transcribe_url(
+                url=resolved_url,
+                model=dg_model or "nova-3",
+                smart_format=cmp_smart_format,
+                punctuate=cmp_punctuate,
+                diarize=cmp_diarize or None,
+            )
+
+        total_ms = round((time.time() - t0) * 1000)
+
+        dg_raw = response.model_dump()
+        audio_duration = None
+        try:
+            audio_duration = dg_raw["metadata"]["duration"]
+        except (KeyError, TypeError):
+            pass
+
+        return dg_raw, 200, total_ms, None, {"audio_duration": audio_duration}
 
     with st.spinner("Transcribing with both providers simultaneously..."):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             aai_future = executor.submit(run_aai)
             dg_future = executor.submit(run_dg)
             aai_result, aai_status, aai_ms, aai_error, aai_extra = aai_future.result()
-            dg_result, dg_status, dg_ms, dg_error, _dg_extra = dg_future.result()
+            dg_result, dg_status, dg_ms, dg_error, dg_extra = dg_future.result()
 
     if aai_error or aai_result is None:
         st.error(f"AssemblyAI failed: {aai_error}")
@@ -1402,6 +1439,14 @@ def render_compare_tab():
     aai_conf = aai_result.get("confidence")
     dg_conf = extract_confidence(dg_result)
 
+    aai_audio_dur = aai_extra.get("audio_duration")  # seconds (float) or None
+    dg_audio_dur = dg_extra.get("audio_duration")
+
+    def _speed(dur, ms):
+        if dur and ms:
+            return f"{dur / (ms / 1000):.1f}×"
+        return "N/A"
+
     similarity = difflib.SequenceMatcher(
         None,
         [w.lower() for w in aai_word_list],
@@ -1415,25 +1460,26 @@ def render_compare_tab():
     # ── Similarity headline ───────────────────────────────────────────────────
     st.markdown(f"### Results  ·  Word-level similarity: **{similarity * 100:.1f}%**")
 
-    aai_submit_ms = aai_extra.get("submit_ms", 0)
-    aai_processing_ms = aai_extra.get("processing_ms", 0)
     faster = "AssemblyAI" if aai_ms < dg_ms else "Deepgram"
 
     st.info(
-        f"**Latency methodology** — Both API calls started at the same instant (thread barrier).  \n"
-        f"AssemblyAI uses an **async API**: submit job → queue → process → poll for result.  \n"
-        f"Deepgram uses a **synchronous API**: one HTTP request returns the completed transcript.  \n"
-        f"AAI breakdown this run: submit {aai_submit_ms:,} ms + processing/poll {aai_processing_ms:,} ms = **{aai_ms:,} ms total**."
+        "**Method**: Both providers called via their official Python SDK in the same pattern:  \n"
+        "create client → set identical options → `transcribe(audio)` → block until result.  \n"
+        "Both calls started at the same instant (thread barrier).  \n"
+        "**Speed factor** = audio duration ÷ total time — higher means faster relative to audio length."
     )
 
     # ── Metrics table (manual columns, no pandas dependency) ─────────────────
     def _conf(c: float | None) -> str:
         return f"{round(c * 100, 1)}%" if c is not None else "N/A"
 
+    def _dur(d):
+        return f"{d:.1f} s" if d is not None else "N/A"
+
     rows = [
-        ("Submit / job dispatch (ms)", f"{aai_submit_ms:,}", "Synchronous — N/A", "AAI submits async; DG returns inline"),
-        ("Processing + poll wait (ms)", f"{aai_processing_ms:,}", "Included in total", "AAI polls at 1s; DG has no polling step"),
         ("Total time to transcript (ms)", f"{aai_ms:,}", f"{dg_ms:,}", f"{abs(aai_ms - dg_ms):,} ms — {faster} faster"),
+        ("Audio duration", _dur(aai_audio_dur), _dur(dg_audio_dur), "should match (same audio)"),
+        ("Speed factor (×realtime)", _speed(aai_audio_dur, aai_ms), _speed(dg_audio_dur, dg_ms), "higher = faster processing"),
         ("Word count", len(aai_word_list), len(dg_word_list), f"Δ {abs(len(aai_word_list) - len(dg_word_list))}"),
         ("Characters (no spaces)", len(aai_text.replace(" ", "")), len(dg_text.replace(" ", "")),
          f"Δ {abs(len(aai_text.replace(' ', '')) - len(dg_text.replace(' ', '')))}"),

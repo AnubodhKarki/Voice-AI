@@ -1,5 +1,4 @@
 .env
-Deepgram/.env
 
 __pycache__/
 *.py[cod]

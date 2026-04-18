@@ -20,6 +20,9 @@ def render_results(result: dict, params: dict, allow_expanders: bool = True):
     st.subheader("Transcript")
     st.write(result.get("text", ""))
 
+    confidence = result.get("confidence")
+    if confidence is not None:
+        st.caption(f"Confidence: {round(confidence * 100, 1)}%")
     if params.get("speaker_labels") and result.get("utterances"):
         st.subheader("Speaker Diarization")
         rows = [

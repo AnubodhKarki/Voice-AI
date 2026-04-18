@@ -5,6 +5,7 @@ numpy>=1.24.0
 plotly>=5.18.0
 python-dotenv>=1.0.0
 requests>=2.32.0
+scipy>=1.10.0
 soundfile>=0.12.0
 streamlit>=1.35.0
 streamlit-webrtc>=0.47.0

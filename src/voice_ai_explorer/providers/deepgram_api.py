@@ -93,6 +93,75 @@ def extract_utterances(dg_response: dict) -> list[dict]:
     return dg_response.get("results", {}).get("utterances", [])
 
 
+def get_projects(api_key: str):
+    """List all projects. Returns (json, status_code, elapsed_ms)."""
+    t0 = time.perf_counter()
+    resp = requests.get(
+        f"{DEEPGRAM_BASE_URL}/projects",
+        headers={"Authorization": f"Token {api_key}"},
+        timeout=10,
+    )
+    elapsed = round((time.perf_counter() - t0) * 1000)
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"error": resp.text}
+    return data, resp.status_code, elapsed
+
+
+def get_request(project_id: str, request_id: str, api_key: str):
+    """Look up a single Deepgram request by project + request ID. Returns (json, status_code, elapsed_ms)."""
+    t0 = time.perf_counter()
+    resp = requests.get(
+        f"{DEEPGRAM_BASE_URL}/projects/{project_id}/requests/{request_id}",
+        headers={"Authorization": f"Token {api_key}"},
+        timeout=10,
+    )
+    elapsed = round((time.perf_counter() - t0) * 1000)
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"error": resp.text}
+    return data, resp.status_code, elapsed
+
+
+def list_requests(project_id: str, api_key: str, limit: int = 10):
+    """List recent requests for a project. Returns (json, status_code, elapsed_ms)."""
+    t0 = time.perf_counter()
+    resp = requests.get(
+        f"{DEEPGRAM_BASE_URL}/projects/{project_id}/requests",
+        headers={"Authorization": f"Token {api_key}"},
+        params={"limit": limit},
+        timeout=10,
+    )
+    elapsed = round((time.perf_counter() - t0) * 1000)
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"error": resp.text}
+    return data, resp.status_code, elapsed
+
+
+def transcribe_url_async(url: str, options: dict, callback_url: str, api_key: str):
+    """Submit a URL for async transcription with callback. Returns (json, status_code, elapsed_ms).
+    Deepgram responds immediately with a request_id; result is POSTed to callback_url."""
+    params = {**options, "callback": callback_url}
+    t0 = time.perf_counter()
+    resp = requests.post(
+        f"{DEEPGRAM_BASE_URL}/listen",
+        headers=_dg_headers(api_key),
+        json={"url": url},
+        params=params,
+        timeout=30,
+    )
+    elapsed = round((time.perf_counter() - t0) * 1000)
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"error": resp.text}
+    return data, resp.status_code, elapsed
+
+
 def build_options(
     *,
     model: str = "nova-3",

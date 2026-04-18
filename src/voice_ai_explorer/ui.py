@@ -24,6 +24,8 @@ from .audio_quality import (
 )
 from .config import (
     DEFAULT_AUDIO_URL,
+    DEEPGRAM_ENGLISH_ONLY_MODELS,
+    DEEPGRAM_LANGUAGE_OPTIONS,
     DEEPGRAM_MODEL_OPTIONS,
     DEEPGRAM_STREAMING_MODEL_OPTIONS,
     LANGUAGE_OPTIONS,
@@ -49,8 +51,12 @@ from .streaming import (
 )
 from .providers.deepgram_api import (
     build_options as dg_build_options,
+    check_api_health as dg_check_api_health,
     extract_confidence,
     extract_transcript as dg_extract_transcript,
+    get_projects as dg_get_projects,
+    get_request as dg_get_request,
+    list_requests as dg_list_requests,
     transcribe_file as dg_transcribe_file,
     transcribe_url as dg_transcribe_url,
 )
@@ -383,8 +389,20 @@ def render_prerecorded_tab():
             model_label = dg_model_label
             model = DEEPGRAM_MODEL_OPTIONS[dg_model_label]
     with col2:
-        lang_label = st.selectbox("Language", list(LANGUAGE_OPTIONS.keys()))
-        language_code = LANGUAGE_OPTIONS[lang_label]
+        if provider == "Deepgram":
+            dg_model = DEEPGRAM_MODEL_OPTIONS.get(st.session_state.get("dg_model_label_prerecorded", "Nova-3 · General (Latest)"), "nova-3")
+            base_model = dg_model.split("-")[0] if "-" in dg_model else dg_model  # "nova" from "nova-3-medical"
+            # enhanced/base are English only; whisper and nova-2/3 support multiple languages
+            is_english_only = any(dg_model.startswith(m) for m in DEEPGRAM_ENGLISH_ONLY_MODELS)
+            if is_english_only:
+                lang_opts = {k: v for k, v in DEEPGRAM_LANGUAGE_OPTIONS.items() if v is None or v.startswith("en")}
+            else:
+                lang_opts = DEEPGRAM_LANGUAGE_OPTIONS
+            lang_label = st.selectbox("Language", list(lang_opts.keys()), key="dg_lang")
+            language_code = lang_opts[lang_label]
+        else:
+            lang_label = st.selectbox("Language", list(LANGUAGE_OPTIONS.keys()), key="aai_lang")
+            language_code = LANGUAGE_OPTIONS[lang_label]
 
     st.subheader("Features")
     c1, c2, c3 = st.columns(3)
@@ -760,6 +778,12 @@ def render_streaming_tab():
                 audio_processor_factory=_AudioForwarder,
                 media_stream_constraints={"audio": True, "video": False},
                 async_processing=True,
+                rtc_configuration={
+                    "iceServers": [
+                        {"urls": ["stun:stun.l.google.com:19302"]},
+                        {"urls": ["stun:stun1.l.google.com:19302"]},
+                    ]
+                },
             )
 
     # ------------------------------------------------------------------ #
@@ -876,27 +900,135 @@ def _curl_delete(path: str) -> str:
 def render_debug_tab():
     st.subheader("API Debug / Inspector")
 
+    debug_provider = st.radio(
+        "Provider", ["AssemblyAI", "Deepgram"], horizontal=True, key="debug_provider"
+    )
+
+    aai_key = get_assemblyai_key(st.session_state.aai_api_key)
+    dg_key = get_deepgram_key(st.session_state.dg_api_key)
+
     # ── Health Check ──────────────────────────────────────────────────────────
     st.markdown("### API Health Check")
-    st.caption(
-        "Validates your API key and measures round-trip latency to the AssemblyAI API."
-    )
+
     if st.button("Run Health Check", key="debug_health"):
-        with st.spinner("Pinging API..."):
-            status, ms, rate_headers = check_api_health()
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric("HTTP Status", status)
-        col_b.metric("Latency (ms)", ms)
-        col_c.metric("Auth", "OK" if status < 400 else "FAILED")
-        if status == 401:
-            st.error("Authentication failed — check your ASSEMBLYAI_API_KEY.")
-        elif status < 400:
-            st.success("API key is valid and the endpoint is reachable.")
-        if rate_headers:
-            with st.expander("Rate limit & request headers"):
-                st.json(rate_headers)
-        with st.expander("Equivalent cURL"):
-            st.code(_curl_get("/v2/transcript", {"limit": 1}), language="bash")
+        if debug_provider == "AssemblyAI":
+            if not aai_key:
+                st.warning("AssemblyAI API key not set.")
+            else:
+                with st.spinner("Pinging AssemblyAI..."):
+                    status, ms, rate_headers = check_api_health(aai_key)
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("HTTP Status", status)
+                col_b.metric("Latency (ms)", ms)
+                col_c.metric("Auth", "OK" if status < 400 else "FAILED")
+                if status == 401:
+                    st.error("Authentication failed — check your ASSEMBLYAI_API_KEY.")
+                elif status < 400:
+                    st.success("AssemblyAI key valid and endpoint reachable.")
+                if rate_headers:
+                    with st.expander("Rate limit & request headers"):
+                        st.json(rate_headers)
+                with st.expander("Equivalent cURL"):
+                    st.code(_curl_get("/v2/transcript", {"limit": 1}), language="bash")
+        else:
+            if not dg_key:
+                st.warning("Deepgram API key not set.")
+            else:
+                with st.spinner("Pinging Deepgram..."):
+                    dg_status, dg_ms, dg_headers = dg_check_api_health(dg_key)
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("HTTP Status", dg_status)
+                col_b.metric("Latency (ms)", dg_ms)
+                col_c.metric("Auth", "OK" if dg_status < 400 else "FAILED")
+                if dg_status == 401:
+                    st.error("Authentication failed — check your DEEPGRAM_API_KEY.")
+                elif dg_status < 400:
+                    st.success("Deepgram key valid and endpoint reachable.")
+                with st.expander("Equivalent cURL"):
+                    st.code(
+                        "curl https://api.deepgram.com/v1/projects \\\n"
+                        '  -H "Authorization: Token $DEEPGRAM_API_KEY"',
+                        language="bash",
+                    )
+
+    st.divider()
+
+    if debug_provider == "Deepgram":
+        # Fetch & cache the first project ID (needed for request lookups).
+        def _get_dg_project_id():
+            if not dg_key:
+                return None, "Deepgram API key not set."
+            proj_body, proj_status, _ = dg_get_projects(dg_key)
+            projects = proj_body.get("projects", [])
+            if proj_status >= 400 or not projects:
+                return None, f"Could not fetch projects (HTTP {proj_status})."
+            return projects[0]["project_id"], None
+
+        # ── Request Inspector ─────────────────────────────────────────────────
+        st.markdown("### Request Inspector")
+        st.caption(
+            "When using the Deepgram `callback` parameter, a `request_id` is returned "
+            "immediately. Paste it here to inspect the request."
+        )
+        lookup_id = st.text_input("Request ID", key="debug_lookup_id")
+        if st.button("Fetch", key="debug_fetch"):
+            if not lookup_id.strip():
+                st.warning("Enter a request ID.")
+            else:
+                project_id, err = _get_dg_project_id()
+                if err:
+                    st.error(err)
+                else:
+                    with st.spinner("Fetching..."):
+                        body, status, ms = dg_get_request(project_id, lookup_id.strip(), dg_key)
+                    st.caption(f"HTTP {status} · {ms} ms")
+                    if status < 400:
+                        st.success("Request found.")
+                        tab_raw, tab_export = st.tabs(["Raw JSON", "Export"])
+                        with tab_raw:
+                            st.json(body)
+                        with tab_export:
+                            import json as _json
+                            st.download_button(
+                                "Download .json",
+                                data=_json.dumps(body, indent=2),
+                                file_name=f"{lookup_id.strip()}.json",
+                                mime="application/json",
+                            )
+                    else:
+                        st.error(f"Lookup failed (HTTP {status})")
+                        st.json(body)
+
+        st.divider()
+
+        # ── Recent Requests ───────────────────────────────────────────────────
+        st.markdown("### Recent Requests")
+        limit = st.number_input("Limit", min_value=1, max_value=100, value=10, key="debug_limit")
+        if st.button("List", key="debug_list"):
+            project_id, err = _get_dg_project_id()
+            if err:
+                st.error(err)
+            else:
+                with st.spinner("Fetching..."):
+                    body, status, ms = dg_list_requests(project_id, dg_key, limit=int(limit))
+                st.caption(f"HTTP {status} · {ms} ms")
+                reqs = body.get("requests", [])
+                if reqs:
+                    rows = [
+                        {
+                            "request_id": r.get("request_id"),
+                            "created": r.get("created"),
+                            "path": r.get("path"),
+                            "response_code": r.get("response", {}).get("code") if isinstance(r.get("response"), dict) else r.get("response"),
+                        }
+                        for r in reqs
+                    ]
+                    st.dataframe(rows, use_container_width=True)
+                else:
+                    st.info("No requests found.")
+                with st.expander("Raw JSON"):
+                    st.json(body)
+        return
 
     st.divider()
 
@@ -1175,8 +1307,11 @@ def render_compare_tab():
         else:
             aai_text = aai_result.get("text") or ""
             aai_words = len(aai_text.split()) if aai_text.strip() else 0
+            aai_conf = aai_result.get("confidence")
             st.metric("Words", aai_words)
             st.metric("Time (ms)", aai_ms)
+            if aai_conf is not None:
+                st.metric("Confidence", f"{round(aai_conf * 100, 1)}%")
             st.text_area("Transcript", value=aai_text, height=300, disabled=True, key="cmp_aai_out")
             with st.expander("Raw JSON"):
                 st.json(aai_result)

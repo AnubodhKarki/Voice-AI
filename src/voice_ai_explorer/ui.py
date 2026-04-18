@@ -1341,13 +1341,19 @@ def render_compare_tab():
             keyterms_input="", prompt_input="",
         )
         barrier.wait()
+        # Track submit and processing separately so the user can see the breakdown.
         t0 = time.time()
-        submit_json, submit_status, _ = submit_transcript_debug(payload, aai_key)
+        submit_json, submit_status, submit_ms = submit_transcript_debug(payload, aai_key)
         if submit_status >= 400:
-            return None, submit_status, 0, "Submission failed"
+            return None, submit_status, 0, "Submission failed", {}
         tid = submit_json["id"]
-        result, _, _ = poll_transcript_debug(tid, aai_key)
-        return result, 200, round((time.time() - t0) * 1000), None
+        # Poll at 1s intervals (default is 3s) so the measured time is close to
+        # actual processing time rather than inflated by polling granularity.
+        t_poll = time.time()
+        result, _, _ = poll_transcript_debug(tid, aai_key, interval=1.0)
+        processing_ms = round((time.time() - t_poll) * 1000)
+        total_ms = round((time.time() - t0) * 1000)
+        return result, 200, total_ms, None, {"submit_ms": submit_ms, "processing_ms": processing_ms}
 
     def run_dg():
         dg_opts = dg_build_options(
@@ -1362,14 +1368,14 @@ def render_compare_tab():
             dg_result, dg_status, _ = dg_transcribe_file(audio_bytes, audio_content_type, dg_opts, dg_key)
         else:
             dg_result, dg_status, _ = dg_transcribe_url(resolved_url, dg_opts, dg_key)
-        return dg_result, dg_status, round((time.time() - t0) * 1000), None
+        return dg_result, dg_status, round((time.time() - t0) * 1000), None, {}
 
     with st.spinner("Transcribing with both providers simultaneously..."):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             aai_future = executor.submit(run_aai)
             dg_future = executor.submit(run_dg)
-            aai_result, aai_status, aai_ms, aai_error = aai_future.result()
-            dg_result, dg_status, dg_ms, dg_error = dg_future.result()
+            aai_result, aai_status, aai_ms, aai_error, aai_extra = aai_future.result()
+            dg_result, dg_status, dg_ms, dg_error, _dg_extra = dg_future.result()
 
     if aai_error or aai_result is None:
         st.error(f"AssemblyAI failed: {aai_error}")

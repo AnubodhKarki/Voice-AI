@@ -1414,17 +1414,26 @@ def render_compare_tab():
 
     # ── Similarity headline ───────────────────────────────────────────────────
     st.markdown(f"### Results  ·  Word-level similarity: **{similarity * 100:.1f}%**")
-    st.caption(
-        "Latency = wall-clock time from the barrier (both threads start the API call at the same instant)."
+
+    aai_submit_ms = aai_extra.get("submit_ms", 0)
+    aai_processing_ms = aai_extra.get("processing_ms", 0)
+    faster = "AssemblyAI" if aai_ms < dg_ms else "Deepgram"
+
+    st.info(
+        f"**Latency methodology** — Both API calls started at the same instant (thread barrier).  \n"
+        f"AssemblyAI uses an **async API**: submit job → queue → process → poll for result.  \n"
+        f"Deepgram uses a **synchronous API**: one HTTP request returns the completed transcript.  \n"
+        f"AAI breakdown this run: submit {aai_submit_ms:,} ms + processing/poll {aai_processing_ms:,} ms = **{aai_ms:,} ms total**."
     )
 
     # ── Metrics table (manual columns, no pandas dependency) ─────────────────
     def _conf(c: float | None) -> str:
         return f"{round(c * 100, 1)}%" if c is not None else "N/A"
 
-    faster = "AssemblyAI" if aai_ms < dg_ms else "Deepgram"
     rows = [
-        ("Latency (ms)", f"{aai_ms:,}", f"{dg_ms:,}", f"{abs(aai_ms - dg_ms):,} ms — {faster} faster"),
+        ("Submit / job dispatch (ms)", f"{aai_submit_ms:,}", "Synchronous — N/A", "AAI submits async; DG returns inline"),
+        ("Processing + poll wait (ms)", f"{aai_processing_ms:,}", "Included in total", "AAI polls at 1s; DG has no polling step"),
+        ("Total time to transcript (ms)", f"{aai_ms:,}", f"{dg_ms:,}", f"{abs(aai_ms - dg_ms):,} ms — {faster} faster"),
         ("Word count", len(aai_word_list), len(dg_word_list), f"Δ {abs(len(aai_word_list) - len(dg_word_list))}"),
         ("Characters (no spaces)", len(aai_text.replace(" ", "")), len(dg_text.replace(" ", "")),
          f"Δ {abs(len(aai_text.replace(' ', '')) - len(dg_text.replace(' ', '')))}"),

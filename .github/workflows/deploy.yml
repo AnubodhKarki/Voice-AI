@@ -18,5 +18,5 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          git remote add space https://anubodhkarki:$HF_TOKEN@huggingface.co/spaces/anubodhkarki/voice-ai-explorer
+          git remote add space https://Anubodh:$HF_TOKEN@huggingface.co/spaces/Anubodh/voice-ai-explorer
           git push space main --force

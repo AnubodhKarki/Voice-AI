@@ -5,6 +5,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     build-essential \
     libsndfile1 \
+    ffmpeg \
+    libavcodec-extra \
+    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
